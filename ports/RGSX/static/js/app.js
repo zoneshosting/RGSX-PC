@@ -2,6 +2,7 @@
         let currentPlatform = null;
         let currentGameSort = 'name_asc';  // Type de tri actuel: 'name_asc', 'name_desc', 'size_asc', 'size_desc'
         let currentGames = [];  // Stocke les jeux actuels pour le tri
+        let currentViewMode = localStorage.getItem('viewMode') || 'grid';  // View mode: grid, list, poster
         let lastProgressUpdate = Date.now();
         let autoRefreshTimeout = null;
         let progressInterval = null;
@@ -16,6 +17,63 @@
                 return {};
             }
         })();
+        let selectedGames = new Set();  // Pour la sélection multiple de jeux
+        
+        // ===== VIEW MODE TOGGLE =====
+        function setViewMode(mode) {
+            currentViewMode = mode;
+            localStorage.setItem('viewMode', mode);
+            
+            const gamesList = document.querySelector('.games-list');
+            if (!gamesList) return;
+            
+            // Remove all view mode classes
+            gamesList.classList.remove('grid-view', 'list-view', 'poster-view');
+            
+            // Add the selected view mode class
+            gamesList.classList.add(`${mode}-view`);
+            
+            // Update button states
+            document.querySelectorAll('.view-mode-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelector(`.view-mode-btn[data-mode="${mode}"]`)?.classList.add('active');
+        }
+        
+        // ===== THEME TOGGLE =====
+        function initTheme() {
+            // Get saved theme or default to light
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+            updateThemeIcon(savedTheme);
+        }
+        
+        function toggleTheme() {
+            const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            
+            document.documentElement.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }
+        
+        function updateThemeIcon(theme) {
+            const themeToggle = document.getElementById('theme-toggle');
+            if (themeToggle) {
+                themeToggle.textContent = theme === 'light' ? '🌙' : '☀️';
+                themeToggle.title = theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode';
+            }
+        }
+        
+        // Create theme toggle button
+        function createThemeToggle() {
+            const themeToggle = document.createElement('button');
+            themeToggle.id = 'theme-toggle';
+            themeToggle.className = 'theme-toggle';
+            themeToggle.onclick = toggleTheme;
+            themeToggle.setAttribute('aria-label', 'Toggle theme');
+            document.body.appendChild(themeToggle);
+        }
         
         // ===== TOAST NOTIFICATIONS =====
         function showToast(message, type = 'info', duration = 3000) {
@@ -1159,16 +1217,21 @@
                     </div>
                     <div class="platform-grid">`;
                 
-                // Ajouter chaque plateforme
+                // Ajouter chaque plateforme avec le nouveau design clean
                 data.platforms.forEach(p => {
-                    let gameCountText = t('web_game_count', '📦', p.games_count || 0);
+                    const gameCountText = p.games_count || 0;
                     html += `
                         <div class="platform-card" onclick='loadGames("${p.platform_name.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}")'>
-                            <img src="/api/image/${encodeURIComponent(p.platform_name)}" 
-                                 alt="${p.platform_name}"
-                                 onerror="this.src='/api/image/default'">
-                            <h3>${p.platform_name}</h3>
-                            <div class="count">${gameCountText}</div>
+                            <div class="platform-image-container">
+                                <img class="platform-image" src="/api/image/${encodeURIComponent(p.platform_name)}" 
+                                     alt="${p.platform_name}"
+                                     onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                                <div class="platform-icon" style="display:none;">🎮</div>
+                            </div>
+                            <div class="platform-name">${p.platform_name}</div>
+                            <div class="platform-info">
+                                <div class="count"><strong>${gameCountText}</strong> ${t('web_roms_available')}</div>
+                            </div>
                         </div>
                     `;
                 });
@@ -1221,6 +1284,21 @@
                         <button class="clear-search" id="clear-games-search" onclick="document.getElementById('game-search').value=''; applyAllFilters();">✕</button>
                         <span class="search-icon">🔍</span>
                     </div>
+                    
+                    <!-- View Mode Toggle -->
+                    <div class="view-mode-toggle" style="display: flex; gap: 0.5rem; margin: 1rem 0; align-items: center;">
+                        <span style="font-weight: 600; margin-right: 0.5rem;">View:</span>
+                        <button class="view-mode-btn ${currentViewMode === 'grid' ? 'active' : ''}" data-mode="grid" onclick="setViewMode('grid')">
+                            ▦ Grid
+                        </button>
+                        <button class="view-mode-btn ${currentViewMode === 'list' ? 'active' : ''}" data-mode="list" onclick="setViewMode('list')">
+                            ☰ List
+                        </button>
+                        <button class="view-mode-btn ${currentViewMode === 'poster' ? 'active' : ''}" data-mode="poster" onclick="setViewMode('poster')">
+                            🖼️ Poster
+                        </button>
+                    </div>
+                    
                     <div class="filter-section">
                         <div class="filter-row">
                             <span class="filter-label">${t('web_filter_region')}:</span>
@@ -1257,27 +1335,80 @@
                         <button class="sort-btn" data-sort="size_asc" onclick="sortGames('size_asc')" title="${sortSizeAsc}">${sortSizeAsc}</button>
                         <button class="sort-btn" data-sort="size_desc" onclick="sortGames('size_desc')" title="${sortSizeDesc}">${sortSizeDesc}</button>
                     </div>
+                    <div style="margin-top: 12px; margin-bottom: 12px; padding: 12px; background: #f0f0f0; border-radius: 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                        <span style="font-weight: bold;">📦 ${t('web_batch_selection')}:</span>
+                        <button onclick="selectAllGames()" style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">☑️ ${t('web_select_all')}</button>
+                        <button onclick="unselectAllGames()" style="padding: 6px 12px; background: #999; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">☐ ${t('web_unselect_all')}</button>
+                        <button id="batch-download-btn" onclick="downloadSelectedGames()" style="padding: 6px 16px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; margin-left: auto; opacity: 0.5;" disabled>⬇️ ${t('web_download')} ${t('web_selected')}</button>
+                    </div>
                     <div id="filter-status" style="margin-bottom: 8px; font-size: 0.9em; color: #666;"></div>
-                    <div class="games-list">`;
+                    <div class="game-list ${currentViewMode}-view">`;
                 
-                // Ajouter chaque jeu
+                // Réinitialiser la sélection quand on change de plateforme
+                selectedGames.clear();
+                
+                // Ajouter chaque jeu avec support pour vue poster
                 data.games.forEach((g, idx) => {
-                    html += `
-                        <div class="game-item">
-                            <span class="game-name">${g.name}</span>
-                            ${g.size ? `<span class="game-size">${g.size}</span>` : ''}
-                            <div class="download-btn-group" style="display: flex; gap: 4px;">
-                                <button class="download-btn" title="${downloadTitle} (now)" onclick='downloadGame("${platform.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", "${g.name.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", ${idx}, "now")'>⬇️</button>
-                                <button class="download-btn" title="${downloadTitle} (queue)" onclick='downloadGame("${platform.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", "${g.name.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", ${idx}, "queue")' style="background: #e0e0e0; color: #333;">➕</button>
+                    // Poster view - Grid of cover art
+                    if (currentViewMode === 'poster') {
+                        html += `
+                            <div class="game-card" data-game-index="${idx}">
+                                <div class="game-poster-container">
+                                    <img class="game-poster" src="/api/game-cover/${encodeURIComponent(platform)}/${encodeURIComponent(g.name)}" 
+                                         alt="${g.name}"
+                                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                    <div class="game-poster-placeholder" style="display: none;">🎮</div>
+                                    <div class="game-poster-overlay">
+                                        <div class="game-poster-title">${g.name}</div>
+                                        ${g.size ? `<div style="font-size: 0.75rem; opacity: 0.9;">${g.size}</div>` : ''}
+                                    </div>
+                                </div>
+                                <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem;">
+                                    <input type="checkbox" class="game-checkbox" onchange="toggleGameSelection(${idx})" style="cursor: pointer;">
+                                    <button class="download-btn" style="flex: 1;" title="${downloadTitle} (now)" onclick='downloadGame("${platform.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", "${g.name.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", ${idx}, "now")'>⬇️</button>
+                                    <button class="download-btn" title="${downloadTitle} (queue)" onclick='downloadGame("${platform.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", "${g.name.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", ${idx}, "queue")' style="background: #e0e0e0; color: #333;">➕</button>
+                                </div>
                             </div>
-                        </div>
-                    `;
+                        `;
+                    }
+                    // List/Grid view - Original layout
+                    else {
+                        html += `
+                            <div class="game-card game-item" data-game-index="${idx}">
+                                ${currentViewMode === 'list' ? `
+                                    <div class="game-list-item-content">
+                                        <div class="game-list-thumbnail">
+                                            <img src="/api/game-cover/${encodeURIComponent(platform)}/${encodeURIComponent(g.name)}" 
+                                                 alt="${g.name}"
+                                                 onerror="this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'60\\' height=\\'60\\'%3E%3Ctext x=\\'30\\' y=\\'30\\' font-size=\\'30\\' text-anchor=\\'middle\\' dy=\\'.3em\\'%3E🎮%3C/text%3E%3C/svg%3E';">
+                                        </div>
+                                        <input type="checkbox" class="game-checkbox" onchange="toggleGameSelection(${idx})" style="margin: 0 0.5rem; cursor: pointer;">
+                                        <div style="flex: 1;">
+                                            <span class="game-name">${g.name}</span>
+                                            ${g.size ? `<div class="game-size" style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 0.25rem;">${g.size}</div>` : ''}
+                                        </div>
+                                    </div>
+                                ` : `
+                                    <input type="checkbox" class="game-checkbox" onchange="toggleGameSelection(${idx})" style="margin-right: 8px; cursor: pointer;">
+                                    <span class="game-name">${g.name}</span>
+                                    ${g.size ? `<span class="game-size">${g.size}</span>` : ''}
+                                `}
+                                <div class="download-btn-group" style="display: flex; gap: 4px;">
+                                    <button class="download-btn" title="${downloadTitle} (now)" onclick='downloadGame("${platform.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", "${g.name.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", ${idx}, "now")'>⬇️</button>
+                                    <button class="download-btn" title="${downloadTitle} (queue)" onclick='downloadGame("${platform.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", "${g.name.replace(/"/g, "&quot;").replace(/'/g, "&#39;")}", ${idx}, "queue")' style="background: #e0e0e0; color: #333;">➕</button>
+                                </div>
+                            </div>
+                        `;
+                    }
                 });
                 
                 html += `
                     </div>
                 `;
                 container.innerHTML = html;
+                
+                // Set initial view mode
+                setViewMode(currentViewMode);
                 
                 // Restore filter states from loaded settings
                 restoreFilterStates();
@@ -1299,6 +1430,129 @@
         function goBackToPlatforms() {
             window.history.pushState({ tab: 'platforms' }, '', '/');
             loadPlatforms();
+        }
+        
+        // ===== FONCTIONS DE SÉLECTION MULTIPLE =====
+        
+        // Basculer la sélection d'un jeu
+        function toggleGameSelection(gameIndex) {
+            if (selectedGames.has(gameIndex)) {
+                selectedGames.delete(gameIndex);
+            } else {
+                selectedGames.add(gameIndex);
+            }
+            updateGameCheckboxes();
+            updateBatchDownloadButton();
+        }
+        
+        // Sélectionner tous les jeux visibles
+        function selectAllGames() {
+            const gameItems = document.querySelectorAll('.game-item:not([style*="display: none"])');
+            gameItems.forEach((item, index) => {
+                const gameIndex = parseInt(item.getAttribute('data-game-index'));
+                if (!isNaN(gameIndex)) {
+                    selectedGames.add(gameIndex);
+                }
+            });
+            updateGameCheckboxes();
+            updateBatchDownloadButton();
+        }
+        
+        // Désélectionner tous les jeux
+        function unselectAllGames() {
+            selectedGames.clear();
+            updateGameCheckboxes();
+            updateBatchDownloadButton();
+        }
+        
+        // Mettre à jour l'état visuel des checkboxes
+        function updateGameCheckboxes() {
+            document.querySelectorAll('.game-item').forEach(item => {
+                const gameIndex = parseInt(item.getAttribute('data-game-index'));
+                const checkbox = item.querySelector('.game-checkbox');
+                if (checkbox && !isNaN(gameIndex)) {
+                    checkbox.checked = selectedGames.has(gameIndex);
+                }
+            });
+        }
+        
+        // Mettre à jour le bouton de téléchargement par lot
+        function updateBatchDownloadButton() {
+            const batchBtn = document.getElementById('batch-download-btn');
+            if (batchBtn) {
+                const count = selectedGames.size;
+                if (count > 0) {
+                    batchBtn.textContent = `⬇️ ${t('web_download')} ${count} ${count > 1 ? t('web_games') : t('web_game')}`;
+                    batchBtn.disabled = false;
+                    batchBtn.style.opacity = '1';
+                } else {
+                    batchBtn.textContent = `⬇️ ${t('web_download')} ${t('web_selected')}`;
+                    batchBtn.disabled = true;
+                    batchBtn.style.opacity = '0.5';
+                }
+            }
+        }
+        
+        // Télécharger tous les jeux sélectionnés
+        async function downloadSelectedGames() {
+            if (selectedGames.size === 0) {
+                showToast(t('web_no_games_selected'), 'warning', 3000);
+                return;
+            }
+            
+            const count = selectedGames.size;
+            showToast(`⬇️ ${t('web_adding')} ${count} ${count > 1 ? t('web_games') : t('web_game')} ${t('web_to_queue')}...`, 'info', 3000);
+            
+            // Collecter les informations des jeux sélectionnés
+            const gamesToDownload = [];
+            selectedGames.forEach(gameIndex => {
+                if (currentGames[gameIndex]) {
+                    gamesToDownload.push({
+                        platform: currentPlatform,
+                        gameIndex: gameIndex,
+                        gameName: currentGames[gameIndex].name
+                    });
+                }
+            });
+            
+            // Télécharger tous les jeux en queue
+            let successCount = 0;
+            let errorCount = 0;
+            
+            for (const game of gamesToDownload) {
+                try {
+                    const response = await fetch('/api/download', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            platform: game.platform,
+                            game_index: game.gameIndex,
+                            mode: 'queue'
+                        })
+                    });
+                    const data = await response.json();
+                    if (data.success) {
+                        successCount++;
+                    } else {
+                        errorCount++;
+                        console.error(`Erreur téléchargement ${game.gameName}:`, data.error);
+                    }
+                } catch (error) {
+                    errorCount++;
+                    console.error(`Erreur téléchargement ${game.gameName}:`, error);
+                }
+            }
+            
+            // Afficher le résultat
+            if (successCount > 0) {
+                showToast(`✅ ${successCount} ${successCount > 1 ? t('web_games') : t('web_game')} ${t('web_added_to_queue')}`, 'success', 5000);
+            }
+            if (errorCount > 0) {
+                showToast(`❌ ${errorCount} erreur(s)`, 'error', 5000);
+            }
+            
+            // Réinitialiser la sélection
+            unselectAllGames();
         }
         
         // Télécharger un jeu
@@ -1414,7 +1668,35 @@
                 const downloads = Object.entries(data.downloads);
                 
                 if (downloads.length === 0) {
-                    container.innerHTML = '<p>' + t('web_no_downloads') + '</p>';
+                    // Charger les informations système pour obtenir le chemin de téléchargement
+                    let downloadsPath = 'downloads';
+                    try {
+                        const settingsResponse = await fetch('/api/settings');
+                        const settingsData = await settingsResponse.json();
+                        if (settingsData.success && settingsData.system_info) {
+                            downloadsPath = settingsData.system_info.downloads_folder || 'downloads';
+                        }
+                    } catch (e) {
+                        console.error('Error loading settings:', e);
+                    }
+                    
+                    container.innerHTML = `
+                        <p>${t('web_no_downloads')}</p>
+                        <div style="margin-top: 20px; background: #e8f5e9; padding: 15px; border-radius: 8px; border: 2px solid #4caf50;">
+                            <div style="display: flex; align-items: start; gap: 10px;">
+                                <span style="font-size: 1.5em;">📥</span>
+                                <div>
+                                    <strong style="display: block; margin-bottom: 5px; color: #2e7d32;">${t('web_download_location')}</strong>
+                                    <p style="margin: 0 0 8px 0; color: #555; font-size: 0.95em;">
+                                        ${t('web_download_location_info')}
+                                    </p>
+                                    <div style="background: white; padding: 8px; border-radius: 4px; font-family: monospace; word-break: break-all; font-size: 0.9em;">
+                                        <strong>${downloadsPath}</strong>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
                     return;
                 }
                 
@@ -1772,6 +2054,7 @@
                     const sizeFormatted = h.total_size ? formatSize(h.total_size) : 'N/A';
                     const platform = h.platform || 'N/A';
                     const timestamp = h.timestamp || 'N/A';
+                    const hasFilePath = h.file_path && isSuccess;
                     
                     // Debug: log le timestamp pour vérifier
                     if (!h.timestamp) {
@@ -1779,7 +2062,7 @@
                     }
                     
                     return `
-                        <div class="history-item ${isError ? 'error' : ''}">
+                        <div class="history-item ${isError ? 'error' : ''}" style="${hasFilePath ? 'cursor: pointer;' : ''}" ${hasFilePath ? `onclick="openFileLocation('${h.file_path.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')"` : ''}>
                             <div style="display: flex; justify-content: space-between; align-items: start;">
                                 <div style="flex: 1;">
                                     <strong>${statusIcon} ${h.game_name || 'Inconnu'}</strong>
@@ -1792,6 +2075,9 @@
                                     <div style="margin-top: 3px; font-size: 0.85em; color: #666;">
                                         📅 Date: ${timestamp}
                                     </div>
+                                    ${hasFilePath ? `<div style="margin-top: 5px; font-size: 0.85em; color: #007bff;">
+                                        📂 Click to open file location
+                                    </div>` : ''}
                                 </div>
                                 <div style="text-align: right; min-width: 100px;">
                                     <span style="background: ${statusColor}; color: white; padding: 4px 10px; border-radius: 5px; font-size: 0.85em;">
@@ -1836,6 +2122,28 @@
                 }
             } catch (error) {
                 alert('❌ ' + t('web_error_clear_history', error.message));
+            }
+        }
+        
+        // Open file location in file manager
+        async function openFileLocation(filePath) {
+            try {
+                const response = await fetch('/api/open-file-location', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_path: filePath })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    console.log('File location opened successfully');
+                } else {
+                    throw new Error(data.error || 'Failed to open file location');
+                }
+            } catch (error) {
+                console.error('Error opening file location:', error);
+                alert('❌ Error opening file location: ' + error.message);
             }
         }
         
@@ -1977,21 +2285,24 @@
                     
                     <h3 style="margin-top: 30px; margin-bottom: 15px;">RGSX Configuration ⚙️</h3>
                     
-                    <div style="margin-bottom: 20px; background: #f0f8ff; padding: 15px; border-radius: 8px; border: 2px solid #007bff;">
-                        <label style="display: block; margin-bottom: 10px; font-size: 1.1em;">📁 ${t('web_settings_roms_folder')}</label>
-                        <div style="display: flex; gap: 10px; margin-bottom: 8px; flex-wrap: wrap;">
-                            <input type="text" id="setting-roms-folder" value="${settings.roms_folder || ''}" 
-                                   data-translate-placeholder="web_settings_roms_placeholder"
-                                   placeholder="${t('web_settings_roms_placeholder')}"
-                                   style="flex: 1; min-width: 200px;">
-                            <button onclick="browseRomsFolder()" 
-                                    style="background: linear-gradient(135deg, #007bff 0%, #0056b3 100%); color: white; border: none; padding: 10px 20px; border-radius: 5px; font-weight: bold; cursor: pointer; white-space: nowrap; flex-shrink: 0;">
-                                📂 ${t('web_settings_browse')}
-                            </button>
+                    <div style="margin-bottom: 20px; background: #e8f5e9; padding: 15px; border-radius: 8px; border: 2px solid #4caf50;">
+                        <div style="display: flex; align-items: start; gap: 10px;">
+                            <span style="font-size: 2em;">📥</span>
+                            <div>
+                                <label style="display: block; margin-bottom: 8px; font-size: 1.1em; font-weight: bold; color: #2e7d32;">
+                                    ${t('web_download_location')}
+                                </label>
+                                <p style="margin: 0 0 8px 0; color: #555; line-height: 1.5;">
+                                    ${t('web_download_location_info')}
+                                </p>
+                                <div style="background: white; padding: 10px; border-radius: 4px; font-family: monospace; word-break: break-all; margin-top: 8px;">
+                                    <strong>${info.downloads_folder || 'downloads'}</strong>
+                                </div>
+                                <small style="color: #666; display: block; margin-top: 8px;">
+                                    💡 ${t('web_download_location_hint')}
+                                </small>
+                            </div>
                         </div>
-                        <small style="color: #666; display: block;">
-                            Current: <strong>${info.roms_folder}</strong> ${settings.roms_folder ? '(custom)' : '(default)'}
-                        </small>
                     </div>
                     
                 
@@ -2212,8 +2523,8 @@
                         saveButton.disabled = false;
                         saveButton.textContent = originalText;
                     }
-                    // Afficher le dialogue de confirmation de redémarrage
-                    showRestartDialog();
+                    // Show success message - settings are applied immediately without restart
+                    alert('✅ ' + data.message + '\n\n' + t('web_settings_applied_immediately'));
                 } else {
                     throw new Error(data.error || t('web_error_unknown'));
                 }
@@ -2503,8 +2814,10 @@
         
         // Initialisation au démarrage
         async function init() {
-            await loadTranslations();  // Charger les traductions
-            applyTranslations();         // Appliquer les traductions à l'interface
+            createThemeToggle();        // Create theme toggle button
+            initTheme();                // Initialize theme
+            await loadTranslations();   // Charger les traductions
+            applyTranslations();        // Appliquer les traductions à l'interface
             loadPlatforms();            // Charger les plateformes
             updateRegionPriorityDisplay(); // Update initial display
             

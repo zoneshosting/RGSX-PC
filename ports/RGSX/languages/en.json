@@ -312,6 +312,7 @@
     "web_no_results": "No results found",
     "web_platforms": "Platforms",
     "web_games": "Games",
+    "web_roms_available": "roms",
     "web_error_search": "Search error",
     "web_back_platforms": "Back to platforms",
     "web_back": "Back",
@@ -349,6 +350,7 @@
     "web_settings_save": "Save Settings",
     "web_settings_saved": "Settings saved successfully!",
     "web_settings_saved_restart": "Settings saved successfully!\\n\\n⚠️ Some settings require a server restart:\\n- Custom ROMs folder\\n- Language\\n\\nPlease restart the web server to apply these changes.",
+    "web_settings_applied_immediately": "Settings have been applied immediately - no restart required!",
     "web_error_save_settings": "Error saving settings: {0}",
     "web_browse_title": "Browse Directories",
     "web_browse_select_drive": "Select a drive...",
@@ -464,5 +466,16 @@
     "folder_created": "Folder created: {0}",
     "folder_create_error": "Error creating folder: {0}",
     "controls_action_select_char": "Add char",
-    "folder_browser_browse": "Browse"
+    "folder_browser_browse": "Browse",
+    "web_batch_selection": "Batch Selection",
+    "web_select_all": "Select All",
+    "web_unselect_all": "Unselect All",
+    "web_selected": "Selected",
+    "web_game": "game",
+    "web_no_games_selected": "No games selected",
+    "web_adding": "Adding",
+    "web_to_queue": "to queue",
+    "web_download_location": "Download Location",
+    "web_download_location_info": "All downloaded games are saved to the default downloads folder. Files are automatically extracted and organized by platform.",
+    "web_download_location_hint": "Each game is saved in its own platform subfolder (e.g., downloads/nintendo 64/game.z64)"
 }

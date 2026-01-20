@@ -844,22 +844,29 @@ def load_sources():
         visible_names = [n for n in all_sorted_names if n and n not in hidden]
 
         # Masquer automatiquement les systèmes dont le dossier ROM n'existe pas (selon le toggle)
+        # Skip this check entirely in webapp mode - we download FROM web, not reading from folders
         unsupported = []
         try:
             from rgsx_settings import get_show_unsupported_platforms
             show_unsupported = get_show_unsupported_platforms(settings)
-            sources_by_name = {s.get("platform_name", ""): s for s in sources if isinstance(s, dict)}
-            for name in list(visible_names):
-                entry = sources_by_name.get(name) or {}
-                folder = entry.get("folder")
-                # Conserver BIOS même sans dossier, et ignorer entrées sans folder
-                bios_name = name.strip()
-                if not folder or bios_name == "- BIOS by TMCTV -" or bios_name == "- BIOS":
-                    continue
-                expected_dir = os.path.join(config.ROMS_FOLDER, folder)
-                if not os.path.isdir(expected_dir):
-                    unsupported.append(name)
-            if show_unsupported:
+            
+            # Skip ROM folder check in webapp mode
+            webapp_mode = getattr(config, 'WEBAPP_MODE', False)
+            
+            if not webapp_mode:
+                sources_by_name = {s.get("platform_name", ""): s for s in sources if isinstance(s, dict)}
+                for name in list(visible_names):
+                    entry = sources_by_name.get(name) or {}
+                    folder = entry.get("folder")
+                    # Conserver BIOS même sans dossier, et ignorer entrées sans folder
+                    bios_name = name.strip()
+                    if not folder or bios_name == "- BIOS by TMCTV -" or bios_name == "- BIOS":
+                        continue
+                    expected_dir = os.path.join(config.ROMS_FOLDER, folder)
+                    if not os.path.isdir(expected_dir):
+                        unsupported.append(name)
+            
+            if show_unsupported or webapp_mode:
                 config.unsupported_platforms = unsupported
             else:
                 if unsupported:

@@ -245,6 +245,41 @@ def get_translation(key, default=None):
         return default
     return key
 
+def reload_settings_into_config():
+    """Reload settings from file and update config module variables without restart."""
+    try:
+        from rgsx_settings import load_rgsx_settings
+        import importlib
+        
+        # Reload settings from file
+        fresh_settings = load_rgsx_settings()
+        
+        # Update config module variables that depend on settings
+        if hasattr(config, 'language'):
+            new_lang = fresh_settings.get('language', 'en')
+            if config.language != new_lang:
+                config.language = new_lang
+                # Reload translations if language changed
+                global TRANSLATIONS
+                TRANSLATIONS = load_translations()
+                logger.info(f"Language reloaded: {new_lang}")
+        
+        # Update show_unsupported_platforms setting
+        config.show_unsupported_platforms = fresh_settings.get('show_unsupported_platforms', False)
+        
+        # Update other settings that affect runtime behavior
+        if 'roms_folder' in fresh_settings and fresh_settings['roms_folder']:
+            config.ROMS_FOLDER = fresh_settings['roms_folder']
+        
+        # Invalidate caches to force reload with new settings
+        invalidate_all_caches(reason="settings updated")
+        
+        logger.info("Settings reloaded into config without restart")
+        return True
+    except Exception as e:
+        logger.error(f"Error reloading settings into config: {e}")
+        return False
+
 # Fonction pour normaliser les tailles de fichier
 def normalize_size(size_str, lang='en'):
     """
@@ -341,12 +376,12 @@ logging.root.addHandler(console_handler)
 logger = logging.getLogger(__name__)
 
 logger.info("=" * 60)
-logger.info("RGSX Web Server - Démarrage du logging")
-logger.info(f"Fichier de log: {config.log_file_web}")
-logger.info(f"Répertoire de log: {config.log_dir}")
+logger.info("RGSX Web Server - Starting logging")
+logger.info(f"Log file: {config.log_file_web}")
+logger.info(f"Log directory: {config.log_dir}")
 logger.info(f"Python version: {sys.version}")
-logger.info(f"Plateforme: {sys.platform}")
-logger.info(f"Répertoire de travail: {os.getcwd()}")
+logger.info(f"Platform: {sys.platform}")
+logger.info(f"Working directory: {os.getcwd()}")
 logger.info(f"Script: {__file__}")
 logger.info("=" * 60)
 
@@ -361,16 +396,16 @@ try:
         test_file.write(f"Test d'écriture directe - {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         test_file.write(f"{'='*60}\n")
         test_file.flush()
-    logger.info("Test d'écriture dans le fichier de log réussi")
+    logger.info("Log file write test successful")
 except Exception as e:
-    logger.error(f"Erreur lors du test d'écriture : {e}")
-    print(f"ERREUR: Impossible d'ecrire dans {config.log_file_web}: {e}", file=sys.stderr)
+    logger.error(f"Error during write test: {e}")
+    print(f"ERROR: Cannot write to {config.log_file_web}: {e}", file=sys.stderr)
 
-# Initialiser les données au démarrage
-logger.info("Chargement initial des données...")
+# Initialize data at startup
+logger.info("Loading initial data...")
 try:
-    initial_sources = load_sources()  # Initialise config.games_count
-    logger.info(f"{len(getattr(config, 'platforms', []))} plateformes chargées")
+    initial_sources = load_sources()  # Initialize config.games_count
+    logger.info(f"{len(getattr(config, 'platforms', []))} platforms loaded")
     
     # Initialiser filter_platforms_selection depuis les settings (pour filtrer les plateformes)
     from rgsx_settings import load_rgsx_settings
@@ -400,7 +435,7 @@ try:
                 all_platform_names.append(name)
         all_platform_names = sorted(set(all_platform_names))
         config.filter_platforms_selection = [(name, name in hidden) for name in all_platform_names]
-        logger.info(f"Filter platforms initialisé: {len(hidden)} plateformes cachées sur {len(all_platform_names)}")
+        logger.info(f"Filter platforms initialized: {len(hidden)} hidden platforms out of {len(all_platform_names)}")
     
     # Force flush
     for handler in logging.root.handlers:
@@ -578,6 +613,68 @@ class RGSXHandler(BaseHTTPRequestHandler):
             if path == '/' or path == '/index.html' or path.startswith('/platform/') or path in ['/downloads', '/history', '/settings']:
                 self._send_html(self._get_index_html())
             
+            # Route: Download file (webapp mode)
+            elif path.startswith('/download/'):
+                try:
+                    from webapp_config import WEBAPP_MODE, ENABLE_BROWSER_DOWNLOADS, WEBAPP_DOWNLOADS_DIR
+                    
+                    if not WEBAPP_MODE or not ENABLE_BROWSER_DOWNLOADS:
+                        self._send_not_found()
+                        return
+                    
+                    # Extract relative path from URL
+                    relative_path = path[len('/download/'):]
+                    relative_path = urllib.parse.unquote(relative_path)
+                    
+                    # Security: normalize and validate path
+                    safe_path = os.path.normpath(relative_path)
+                    if safe_path.startswith('..') or os.path.isabs(safe_path):
+                        self._send_not_found()
+                        return
+                    
+                    full_path = os.path.join(WEBAPP_DOWNLOADS_DIR, safe_path)
+                    
+                    # Verify the file exists and is within downloads directory
+                    if not full_path.startswith(WEBAPP_DOWNLOADS_DIR) or not os.path.isfile(full_path):
+                        self._send_not_found()
+                        return
+                    
+                    # Serve the file
+                    filename = os.path.basename(full_path)
+                    mime_type, _ = mimetypes.guess_type(full_path)
+                    if not mime_type:
+                        mime_type = 'application/octet-stream'
+                    
+                    file_size = os.path.getsize(full_path)
+                    
+                    # Set headers for download
+                    extra_headers = {
+                        'Content-Disposition': f'attachment; filename="{filename}"',
+                        'Content-Length': str(file_size),
+                        'Accept-Ranges': 'bytes'
+                    }
+                    
+                    self._set_headers(mime_type, status=200, extra_headers=extra_headers)
+                    
+                    # Stream the file
+                    with open(full_path, 'rb') as f:
+                        chunk_size = 1024 * 1024  # 1MB chunks
+                        while True:
+                            chunk = f.read(chunk_size)
+                            if not chunk:
+                                break
+                            try:
+                                self.wfile.write(chunk)
+                            except (ConnectionAbortedError, BrokenPipeError):
+                                logger.debug(f"Client disconnected during download: {filename}")
+                                break
+                    
+                    logger.info(f"File downloaded: {relative_path}")
+                    
+                except Exception as e:
+                    logger.error(f"Error serving download: {e}")
+                    self._send_not_found()
+            
             # Route: API - Liste des plateformes
             elif path == '/api/platforms':
                 platforms, _, source_last_modified = get_cached_sources()
@@ -594,7 +691,10 @@ class RGSXHandler(BaseHTTPRequestHandler):
                 settings = load_rgsx_settings()
                 show_unsupported = get_show_unsupported_platforms(settings)
 
-                if not show_unsupported:
+                # In webapp mode, always show all platforms (no ROM folder check needed)
+                webapp_mode = getattr(config, 'WEBAPP_MODE', False)
+                
+                if not show_unsupported and not webapp_mode:
                     # Masquer les plateformes dont le dossier ROM n'existe pas
                     for platform in platforms:
                         platform_name = platform.get('platform_name', '')
@@ -652,7 +752,10 @@ class RGSXHandler(BaseHTTPRequestHandler):
                     settings = load_rgsx_settings()
                     show_unsupported = get_show_unsupported_platforms(settings)
                     
-                    if not show_unsupported:
+                    # In webapp mode, always show all platforms (no ROM folder check needed)
+                    webapp_mode = getattr(config, 'WEBAPP_MODE', False)
+                    
+                    if not show_unsupported and not webapp_mode:
                         # Masquer les plateformes dont le dossier ROM n'existe pas
                         for platform in platforms:
                             platform_name = platform.get('platform_name', '')
@@ -738,6 +841,66 @@ class RGSXHandler(BaseHTTPRequestHandler):
                     'language': get_language(),
                     'translations': translations_with_lang
                 })
+            
+            # Route: API - List downloaded files (webapp mode)
+            elif path == '/api/webapp/files':
+                try:
+                    from webapp_config import list_downloaded_files, get_storage_usage, WEBAPP_MODE
+                    
+                    if not WEBAPP_MODE:
+                        self._send_json({
+                            'success': False,
+                            'error': 'Webapp mode not enabled'
+                        }, status=403)
+                        return
+                    
+                    query_params = urllib.parse.parse_qs(parsed_path.query)
+                    platform_filter = query_params.get('platform', [None])[0]
+                    
+                    files = list_downloaded_files(platform_filter)
+                    storage = get_storage_usage()
+                    
+                    self._send_json({
+                        'success': True,
+                        'files': files,
+                        'storage': storage,
+                        'platform_filter': platform_filter
+                    })
+                except Exception as e:
+                    logger.error(f"Error listing downloaded files: {e}")
+                    self._send_json({
+                        'success': False,
+                        'error': str(e)
+                    }, status=500)
+            
+            # Route: API - Storage statistics (webapp mode)
+            elif path == '/api/webapp/storage':
+                try:
+                    from webapp_config import get_storage_usage, WEBAPP_MODE, MAX_DOWNLOAD_STORAGE_GB
+                    
+                    if not WEBAPP_MODE:
+                        self._send_json({
+                            'success': False,
+                            'error': 'Webapp mode not enabled'
+                        }, status=403)
+                        return
+                    
+                    storage = get_storage_usage()
+                    
+                    self._send_json({
+                        'success': True,
+                        'storage': storage,
+                        'limits': {
+                            'max_gb': MAX_DOWNLOAD_STORAGE_GB,
+                            'unlimited': MAX_DOWNLOAD_STORAGE_GB == 0
+                        }
+                    })
+                except Exception as e:
+                    logger.error(f"Error getting storage stats: {e}")
+                    self._send_json({
+                        'success': False,
+                        'error': str(e)
+                    }, status=500)
             
             # Route: API - Liste des jeux d'une plateforme
             elif path.startswith('/api/games/'):
@@ -845,6 +1008,43 @@ class RGSXHandler(BaseHTTPRequestHandler):
                     'history': visible_history
                 })
             
+            # Route: API - Open file location in file manager
+            elif path == '/api/open-file-location':
+                try:
+                    file_path = data.get('file_path')
+                    if not file_path or not os.path.exists(file_path):
+                        self._send_json({
+                            'success': False,
+                            'error': 'File not found or invalid path'
+                        }, status=404)
+                        return
+                    
+                    # Open file location in system file manager
+                    import platform as platform_module
+                    import subprocess
+                    
+                    file_dir = os.path.dirname(file_path)
+                    system = platform_module.system()
+                    
+                    if system == 'Windows':
+                        # Windows: Open explorer and select the file
+                        subprocess.Popen(['explorer', '/select,', os.path.normpath(file_path)])
+                    elif system == 'Darwin':  # macOS
+                        subprocess.Popen(['open', '-R', file_path])
+                    else:  # Linux
+                        subprocess.Popen(['xdg-open', file_dir])
+                    
+                    self._send_json({
+                        'success': True,
+                        'message': 'File location opened successfully'
+                    })
+                except Exception as e:
+                    logger.error(f"Error opening file location: {e}")
+                    self._send_json({
+                        'success': False,
+                        'error': str(e)
+                    }, status=500)
+            
             # Route: API - Queue (lecture)
             elif path == '/api/queue':
                 try:
@@ -891,7 +1091,8 @@ class RGSXHandler(BaseHTTPRequestHandler):
                         'system_info': {
                             'system': config.OPERATING_SYSTEM,
                             'roms_folder': config.ROMS_FOLDER,
-                            'platforms_count': len(config.platforms) if hasattr(config, 'platforms') else 0
+                            'platforms_count': len(config.platforms) if hasattr(config, 'platforms') else 0,
+                            'downloads_folder': os.getenv('RGSX_DOWNLOADS_DIR', os.path.join(os.path.dirname(__file__), '..', '..', 'downloads'))
                         }
                     })
                 except Exception as e:
@@ -986,7 +1187,7 @@ class RGSXHandler(BaseHTTPRequestHandler):
                                         'last_modified': _now_utc(),
                                     })
                             platforms_count = len(getattr(config, 'platforms', []))
-                            logger.info(f"✅ {platforms_count} plateformes chargées")
+                            logger.info(f"✅ {platforms_count} platforms loaded")
                             deleted.append(f'loaded: {platforms_count} platforms')
                         else:
                             raise Exception(f"Échec extraction: {message}")
@@ -1020,6 +1221,17 @@ class RGSXHandler(BaseHTTPRequestHandler):
                 platform_name = path.split('/api/image/')[-1]
                 platform_name = urllib.parse.unquote(platform_name)
                 self._serve_platform_image(platform_name)
+            
+            # Route: Game cover art (placeholder for now)
+            elif path.startswith('/api/game-cover/'):
+                # Extract platform and game name from /api/game-cover/{platform}/{game}
+                parts = path.split('/api/game-cover/')[-1].split('/', 1)
+                if len(parts) == 2:
+                    platform_name = urllib.parse.unquote(parts[0])
+                    game_name = urllib.parse.unquote(parts[1])
+                    self._serve_game_cover(platform_name, game_name)
+                else:
+                    self._send_json({'success': False, 'error': 'Invalid cover art request'}, status=400)
             
             # Route: Favicon
             elif path == '/api/favicon':
@@ -1529,11 +1741,18 @@ class RGSXHandler(BaseHTTPRequestHandler):
                             logger.error(f"Erreur sauvegarde API keys: {e}")
                         del settings['api_keys']
                     
+                    # Note: roms_folder setting is saved but not used for webapp downloads
+                    # Webapp mode always uses RGSX_DOWNLOADS_DIR environment variable
+                    # Default: H:\00-DevOps\2026-Jan-Projects\RGSX-PC\downloads
+                    
                     save_rgsx_settings(settings)
+                    
+                    # Reload settings into config without restart
+                    reload_success = reload_settings_into_config()
                     
                     self._send_json({
                         'success': True,
-                        'message': 'Paramètres sauvegardés avec succès'
+                        'message': 'Paramètres sauvegardés avec succès' + (' et rechargés' if reload_success else '')
                     })
                     
                 except Exception as e:
@@ -1572,6 +1791,9 @@ class RGSXHandler(BaseHTTPRequestHandler):
                         config.game_filter_obj.regex_mode = data.get('regex_mode', False)
                         config.game_filter_obj.region_priority = data.get('region_priority', ['USA', 'Canada', 'World', 'Europe', 'Japan', 'Other'])
                     
+                    # Reload settings into config without restart
+                    reload_settings_into_config()
+                    
                     self._send_json({
                         'success': True,
                         'message': 'Filtres sauvegardés'
@@ -1599,6 +1821,96 @@ class RGSXHandler(BaseHTTPRequestHandler):
                     
                 except Exception as e:
                     logger.error(f"Erreur lors du vidage de l\\'historique: {e}")
+                    self._send_json({
+                        'success': False,
+                        'error': str(e)
+                    }, status=500)
+            
+            # Route: Delete downloaded file (webapp mode)
+            elif path == '/api/webapp/delete':
+                try:
+                    from webapp_config import WEBAPP_MODE, ENABLE_FILE_MANAGEMENT, WEBAPP_DOWNLOADS_DIR
+                    
+                    if not WEBAPP_MODE or not ENABLE_FILE_MANAGEMENT:
+                        self._send_json({
+                            'success': False,
+                            'error': 'File management not enabled'
+                        }, status=403)
+                        return
+                    
+                    relative_path = data.get('relative_path')
+                    if not relative_path:
+                        self._send_json({
+                            'success': False,
+                            'error': 'Parameter missing: relative_path required'
+                        }, status=400)
+                        return
+                    
+                    # Security: normalize and validate path
+                    safe_path = os.path.normpath(relative_path)
+                    if safe_path.startswith('..') or os.path.isabs(safe_path):
+                        self._send_json({
+                            'success': False,
+                            'error': 'Invalid path'
+                        }, status=400)
+                        return
+                    
+                    full_path = os.path.join(WEBAPP_DOWNLOADS_DIR, safe_path)
+                    
+                    # Verify the file exists and is within downloads directory
+                    if not full_path.startswith(WEBAPP_DOWNLOADS_DIR):
+                        self._send_json({
+                            'success': False,
+                            'error': 'Invalid path'
+                        }, status=400)
+                        return
+                    
+                    if not os.path.exists(full_path):
+                        self._send_json({
+                            'success': False,
+                            'error': 'File not found'
+                        }, status=404)
+                        return
+                    
+                    # Delete the file
+                    os.remove(full_path)
+                    logger.info(f"File deleted: {relative_path}")
+                    
+                    self._send_json({
+                        'success': True,
+                        'message': f'File deleted: {os.path.basename(full_path)}'
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Error deleting file: {e}")
+                    self._send_json({
+                        'success': False,
+                        'error': str(e)
+                    }, status=500)
+            
+            # Route: Cleanup old files (webapp mode)
+            elif path == '/api/webapp/cleanup':
+                try:
+                    from webapp_config import cleanup_old_files, WEBAPP_MODE, AUTO_CLEANUP_ENABLED
+                    
+                    if not WEBAPP_MODE:
+                        self._send_json({
+                            'success': False,
+                            'error': 'Webapp mode not enabled'
+                        }, status=403)
+                        return
+                    
+                    removed_files = cleanup_old_files()
+                    
+                    self._send_json({
+                        'success': True,
+                        'removed_count': len(removed_files),
+                        'removed_files': [os.path.basename(f) for f in removed_files],
+                        'auto_cleanup_enabled': AUTO_CLEANUP_ENABLED
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Error cleaning up files: {e}")
                     self._send_json({
                         'success': False,
                         'error': str(e)
@@ -1870,6 +2182,31 @@ DO NOT share this file publicly as it may contain sensitive information.
             transparent_png = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
             self.wfile.write(transparent_png)
     
+    def _serve_game_cover(self, platform_name, game_name):
+        """Serve game cover art (placeholder - returns transparent PNG for now)"""
+        try:
+            # TODO: Implement actual cover art scraping from ScreenScraper.fr or IGDB API
+            # For now, return a transparent PNG as placeholder
+            logger.debug(f"Game cover requested: {platform_name} - {game_name}")
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'image/png')
+            self.send_header('Cache-Control', 'public, max-age=3600')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            # PNG transparent 1x1 pixel (placeholder)
+            transparent_png = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
+            self.wfile.write(transparent_png)
+            
+        except Exception as e:
+            logger.error(f"Error serving game cover {platform_name}/{game_name}: {e}", exc_info=True)
+            self.send_response(500)
+            self.send_header('Content-type', 'image/png')
+            self.send_header('Cache-Control', 'public, max-age=60')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+    
     def _serve_favicon(self):
         """Sert le favicon de l'application"""
         try:
@@ -2081,7 +2418,7 @@ def run_server(host='0.0.0.0', port=5000):
                 except Exception as e:
                     logger.warning(f"Impossible de tuer le processus {pid}: {e}")
     except Exception as e:
-        logger.warning(f"Impossible de libérer le port {port}: {e}")
+        logger.warning(f"Cannot free port {port}: {e}")
     
     # Attendre un peu pour que le port se libère
     time.sleep(1)
@@ -2089,9 +2426,9 @@ def run_server(host='0.0.0.0', port=5000):
     httpd = ReuseAddrHTTPServer(server_address, RGSXHandler)
     
     logger.info("=" * 60)
-    logger.info("RGSX Web Server démarré !")
+    logger.info("RGSX Web Server started!")
     logger.info("=" * 60)
-    logger.info(f"Accès local: http://localhost:{port}")
+    logger.info(f"Local access: http://localhost:{port}")
     
     # Force flush
     for handler in logging.root.handlers:
@@ -2104,18 +2441,18 @@ def run_server(host='0.0.0.0', port=5000):
         s.connect(("8.8.8.8", 80))
         local_ip = s.getsockname()[0]
         s.close()
-        logger.info(f"Accès réseau: http://{local_ip}:{port}")
+        logger.info(f"Network access: http://{local_ip}:{port}")
     except Exception as e:
-        # Fallback: méthode classique
+        # Fallback: classic method
         try:
             hostname = socket.gethostname()
             local_ip = socket.gethostbyname(hostname)
-            logger.info(f"🌍 Accès réseau: http://{local_ip}:{port}")
+            logger.info(f"🌍 Network access: http://{local_ip}:{port}")
         except:
-            logger.warning("⚠️ Impossible de déterminer l'IP locale")
+            logger.warning("⚠️ Cannot determine local IP")
     
     logger.info("=" * 60)
-    logger.info("Appuyez sur Ctrl+C pour arrêter le serveur")
+    logger.info("Press Ctrl+C to stop the server")
     logger.info("=" * 60)
     
     # Force flush final avant de commencer à servir
@@ -2125,26 +2462,26 @@ def run_server(host='0.0.0.0', port=5000):
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        logger.info("\n🛑 Arrêt du serveur...")
+        logger.info("\n🛑 Stopping server...")
         for handler in logging.root.handlers:
             handler.flush()
         httpd.shutdown()
-        logger.info("✅ Serveur arrêté proprement")
+        logger.info("✅ Server stopped cleanly")
         for handler in logging.root.handlers:
             handler.flush()
 
 
 if __name__ == '__main__':
     print("="*60, flush=True)
-    print("Demarrage du serveur RGSX Web...", flush=True)
-    print(f"Fichier de log prevu: {config.log_file_web}", flush=True)
+    print("Starting RGSX Web Server...", flush=True)
+    print(f"Expected log file: {config.log_file_web}", flush=True)
     print("="*60, flush=True)
     
     parser = argparse.ArgumentParser(description='RGSX Web Server')
-    parser.add_argument('--host', default='0.0.0.0', help='Adresse IP (défaut: 0.0.0.0)')
-    parser.add_argument('--port', type=int, default=5000, help='Port (défaut: 5000)')
+    parser.add_argument('--host', default='0.0.0.0', help='IP address (default: 0.0.0.0)')
+    parser.add_argument('--port', type=int, default=5000, help='Port (default: 5000)')
     
     args = parser.parse_args()
     
-    print(f"Lancement sur {args.host}:{args.port}...", flush=True)
+    print(f"Launching on {args.host}:{args.port}...", flush=True)
     run_server(host=args.host, port=args.port)
